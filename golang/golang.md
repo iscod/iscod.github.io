@@ -115,21 +115,22 @@ err panic
 
 ```go
 func def1(i int) (t int) {
-	t = i
-	defer func() { t += 3 }()
-	return t
+    t = i                  // t = 1
+    defer func() { t += 3 }() // 闭包直接引用了有名返回值 t
+    return t               // 第一步：赋值 (t = t，依然是 1)；第二步：执行 defer (t = 1 + 3)
 }
 
 func def2(i int) int {
-	t := i
-	defer func() { t += 3 }()
-	return t
+    t := i                  // 局部变量 t = 1
+    defer func() { t += 3 }() // 闭包修改的是局部变量 t
+    return t                // 第一步：赋值 (匿名返回值 = t，副本值为 1)；第二步：执行 defer (t = 1 + 3)
 }
 
 func def3(i int) (t int) {
-	defer func() { t += i }()
-	return 2
+    defer func() { t += i }() // 闭包修改有名返回值 t
+    return 2                  // 第一步：赋值 (t = 2)；第二步：执行 defer (t = 2 + 1)
 }
+
 func main() {
 	fmt.Println(def1(1), def2(1), def3(1))
 }
@@ -141,6 +142,12 @@ func main() {
 # go run main.go
 4,1,3
 ```
+
+要理解这三个结果，必须记住 Go 处理 return 的两步操作（非原子）：
+
+1. 赋值：将返回值（或表达式的结果）写入返回值变量。
+2. 执行 defer：按照后进先出的顺序执行 defer 函数。
+3. 退出：函数真正携带返回值变量中的内容退出。
 
 ## iota
 
