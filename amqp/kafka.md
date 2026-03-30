@@ -1,263 +1,229 @@
-# kafka
+# Kafka
 
-## kafka特点
+Apache Kafka 是分布式流平台，常用于**日志与事件流**、**消息缓冲**和**流处理**。下文整理特点、核心概念、副本与消费配置、语义与典型场景（保留原文配图链接）。
 
-1. 消息持久化
-1. 高吞吐量
-1. 扩展性强（可以动态扩展）
-1. 多客户端支持
-1. Kafka stream（流处理）
-1. 安全机制
-1. 数据备份
-1. 轻量级
-1. 支持消息压缩（支持自定义压缩）
+**结构导读**：特点与边界 → 适用场景 → 基础概念 → 副本与分区 → 配置要点 → 消费与积压 → 送达语义 → 应用场景 → 参考。
 
-> 不支持延迟队列、优先级队列、消息重试
+---
 
-## kafka适用场景
+## 特点与边界
 
-日志收集、消息系统、流式处理。不适合限时订单
+**常见优势**
 
-kafka有以下优点：多生产者多消费，基于磁盘的数据存储，高伸缩性，高性能
+1. **持久化**：日志分段落盘，可配置保留策略与压缩。
+2. **高吞吐**：顺序写盘、批量发送/拉取，适合大流量。
+3. **水平扩展**：通过增加 Broker、分区伸缩容量。
+4. **多语言客户端**：生态成熟。
+5. **Kafka Streams / 流处理**：与消息栈一体的流计算能力。
+6. **安全**：SASL、TLS、ACL 等（依集群配置）。
+7. **副本**：多副本提升可用性与数据冗余。
+8. **消息压缩**：支持 gzip、snappy、lz4、zstd 等。
+
+**与经典 MQ 的差异（开箱能力）**
+
+Kafka **不强调**像 RabbitMQ 那样的延迟队列、优先级队列、内置消费重试 DLQ 模型；这些通常用**主题设计**（重试主题、死信主题）、**流处理**或**应用层**实现。
+
+---
+
+## 适用场景
+
+- **日志 / 事件采集**、**消息总线**、**流式处理**、**削峰填谷**。
+- **不适合**强依赖「分钟级定时触发」且要求中间件原生延迟队列的订单闭环（可改用定时任务 + 业务表或专用 MQ 能力）。
+
+**概括**：天然适合**多生产者、多消费者**、**可回放**的日志型数据管道；持久化与高伸缩是其强项。
+
+---
 
 ## 基础概念
 
-1. 主题
-1. 生产者&消费者、偏移量、消费者群组
+| 概念 | 说明 |
+|------|------|
+| **Topic** | 逻辑上的消息类别；物理上由多个 **Partition** 组成。 |
+| **Partition** | 有序日志；分区之间无序。是并行度与副本的单位。 |
+| **Producer / Consumer** | 生产与消费记录；Consumer 通常属于某个 **Consumer Group**。 |
+| **Offset** | 分区内的消费位移；由组协调器与 `__consumer_offsets`（或旧版 ZooKeeper）管理。 |
 
-## 副本
+---
 
-`kafka`副本主要用于提高数据可靠性。
-`kafka`默认生成1个副本，一般生产环境设置2-3个副本，过多的副本会增加磁盘存储空间和网络数据传输降低效率
+## 副本（Replication）
 
-`kafka`中副本分为`Leader`和`Follower`。生产者只会发送数据到`Leader`。`Follower`会自动从`Leader`中同步
+副本用于**容错**：同一分区的多个副本分布在不同 Broker 上。
 
-AR=Isr+Osr
+- 默认副本因子常为 **1**（学习环境）；生产一般 **2～3**。副本过多会增加存储与复制带宽，需权衡。
+- 副本角色：**Leader** 负责读写请求（生产者一般只写 Leader）；**Follower** 从 Leader **拉取**复制。
 
-`Isr`: 表示和`Leader`同步的`Follower`集合
+### AR / ISR / 掉队副本
 
-Osr: 表示`Follower`和`Leader`同步时，延迟过多（超时）的副本
+- **AR（Assigned Replicas）**：分区分配到的全部副本。
+- **ISR（In-Sync Replicas）**：与 Leader **保持同步**（在 `replica.lag.time.max.ms` 等阈值内）的副本集合。
+- **未在 ISR 中的副本**：常称为**掉队副本**（因延迟过大被移出 ISR 等）。有资料用 **OSR** 等非官方缩写指代，与 ISR 相对；**不要**写成与官方文档混用的固定公式，只需理解：**Leader 选举优先在 ISR 内进行**。
 
-#### 副本选举策略
+### Leader 选举（要点）
 
-根据ISR中存活的，且在Osr中排序较前的做为`Leader`
+Controller 在 Leader 失效时，通常从 **ISR** 中选出新 Leader。若 ISR 为空，是否允许从非 ISR 副本选举（**unclean leader election**）由 `unclean.leader.election.enable` 控制：打开可能丢数据，关闭可能短期不可用。
+
+创建主题示例：
 
 ```bash
-kafka-topics --create --topic test --replication-factor 2 --partitions 4 --bootstrap-server 127.0.0.1:9092 # 创建了四个分区，两个副本的topic
+kafka-topics --create --topic test --replication-factor 2 --partitions 4 \
+  --bootstrap-server 127.0.0.1:9092
+# 4 个分区，副本因子 2
 ```
 
-### Partition
+---
 
-#### 分区分配策略
+## 分区与消费者分配
 
-    * range
+### Consumer 分区分配策略
 
-    首先对Topic里面的分区按照序号排序，并对消费者按照字母排序，通过 `partition`数量/`consumer`数量 决定每个消费者应该消费几个分区，余数由前面的几个分区消费。
-    当Topic数量较多时容易产生数据倾斜，应注意。
+常见实现（通过客户端 `partition.assignment.strategy` 配置，名称随版本略有差异）：
 
-    * cooperative-sticky
+- **Range**：按分区序号与消费者 id 排序后，按区间分配；**多 Topic** 时可能出现**分配不均**。
+- **RoundRobin**：把所有 Topic 的分区与消费者轮询分配，相对更均匀。
+- **Sticky / Cooperative-sticky**：尽量**保持分区粘性**；协作式再均衡时可减少不必要的撤销与停顿。
 
-    粘性分区分配策略是尽量均衡的放置分区到消费者上面，当一个消费者宕机时, 会尽量保持原有的分配的分区不变化
+默认策略随 **Kafka 与客户端版本**而异，以当前客户端文档为准；不要死记「range + roundrobin 同时默认」。
 
-    * roundrobin
+> **约束**：**同一分区同一时刻只会有一个组内消费者读取**（同一 consumer group）。若消费者数 **大于** 分区数，多出来的消费者会空闲。
 
-    针对所有的topic, 把所有的`partition`和`consumer`都罗列出来, 然后进行hashcode进行排序, 最后通过轮询算法来分配`partition`到各个消费者
+---
 
-默认分区策略是：`range` + `roundrobin`
+## 配置要点
 
-> 每一个分区只能有一个消费者消费，当消费者组内的消费者数量大于分区数时，多出的消费者必然不会工作
+### Broker / 系统级（摘录）
 
-### kafka配置
+| 配置项 | 含义 |
+|--------|------|
+| `broker.id` | 集群内唯一整数；常与 IP 解耦，换 IP 可不换 id。 |
+| `listeners` | 监听地址列表；`0.0.0.0` 表示绑定所有网卡。 |
+| `zookeeper.connect` | **KRaft 模式前**的 ZK 连接串（新版本逐步以 KRaft 替代，部署时以实际模式为准）。 |
+| `auto.create.topics.enable` | 是否允许自动建 Topic；生产常设为 **false**，避免误创建。 |
+| `log.dirs` | 数据目录，可多路径；新分区会倾向落在负载较低的路径（实现细节以版本为准）。 |
 
-#### 系统配置文件
+### Topic 级（摘录）
 
-* broker.id
+- **`num.partitions`**：新 Topic 默认分区数。一般 **分区数 ≥ 峰值下消费者并行度**（并预留扩容空间）。分区策略见上文「分区与消费者分配」。
+- **`message.max.bytes` / 相关 fetch 上限**：Broker、Producer、Consumer 侧**最大消息与拉取字节**需配套，否则大消息会被拒或截断。
 
-在集群下的唯一id,要求是整数。如果服务器ip发生变化，而broker.id没有变化，则不影响consumers消费情况
-
-* listeners
-
-监听列表，逗号分割，如果hostname为`0.0.0.0`则绑定所有的网卡地址，如果为空，则绑定默认网卡
-
-* zookeeper.connect
-
-zookeeper集群地址，多个采用逗号分隔
-
-* auto.create.topics.enable=true
-
-是否运行自动创建主题，如果设置为true, 那么product,consumer,fetach一个不存在的主题时，会自动创建。一般处于安全考虑会设置为false
-
-* log.dirs
-
-kafka消息数据存放的目录，可以设置多个，采用逗号分割，如果设置多个，kafka会根据`最少使用`原则，把同一分区的日志片段保存到同一路径下，会往拥有最少分区的路径新增分区
-
-1. 主题配置
-
-* num.partitions
-
-新建主题的分区个数。该参数根据消费者处理能力和数量进行确定，分区数应大于消费者数量（1，便于后面扩充消费者数量，2，每一个分区至少一个消费者，分区数大于消费者数量时，消费者会平分分区[分区策略]([https://iscod.github.io/#/amqp/kafka?id=partition]))
-
-* message.max.bytes
-
-消息最大字节数，生产者消费者应该设置一致。该值一般与`fetch.message.max.bytes`配合设置。
-
-#### 生产者配置
-```go
-configMap.SetKey("request.timeout.ms", "30000") //生产者请求的确认超时时间
-```
-
-#### 消费者配置
+### Producer（Go 示例片段）
 
 ```go
-configMap.SetKey("enable.auto.commit", true)     //是否自动提交offset，默认true
-configMap.SetKey("auto.commit.interval.ms", 5000) //自动提交offset的时间间隔,默认5秒，可以修改时间提高频率
+configMap.SetKey("request.timeout.ms", "30000") // 等待服务端响应的超时（毫秒）
 ```
 
-#### 手动提交`offset`
+`batch.size`、`linger.ms` 等用于批量与延迟折中；`batch.size` 单位为**字节**（默认约 16KB），调优时与 `linger.ms`、吞吐一起测。
 
-`kafka`的自动提交虽然便利，但是业务开发有时需要手动控制`offset`的提交时机，因此可以采用手动模式进行提交
-
-手动提交有两种方法：`commitSync(同步提交)`和`commitAsync(异步提交)`两种，同步提交会阻塞当前线程，一直到提交成功，并且会自动失败重试。而异步提交没有失败重试机制，故有可能提交失败。
-
-合理的方式是：在主线程采用异步提交，而退出线程时采用回调等形式进行一次同步提交
+### Consumer（Go 示例片段）
 
 ```go
-configMap.SetKey("enable.auto.commit", false)     //首先关闭自动提交
+configMap.SetKey("enable.auto.commit", "true")
+configMap.SetKey("auto.commit.interval.ms", "5000")
 ```
 
-#### 指定`offset`消费
+> Confluent 等客户端的配置值多为**字符串**。
 
-#### 重复消费&漏消费
+### 手动提交 Offset
 
-* 重复消费
+关闭自动提交后，在业务合适时机调用 **`commitSync`（同步，可阻塞并重试）** 或 **`commitAsync`（异步，无内置重试）**。
 
-采用自动提交`offset`时，默认策略是每5s进行一次提交。而在下次未提交之前, `consumer`拉取了数据就进行处理, 却因为异常退出, 而未进行`commit`。
-那么`consumer`重启后，则从上次提交的`offset`处继续消费，造成重复消费。因此数据的处理要做幂等性。
-
-* 漏消费
-
-设置`offset`手动提交时，数据拉取后程序内存中，未处理完毕，此时消费者线程kill掉，那么offset采用的异步提交已完成。那么就导致这部分内存中数据未处理而丢失
-
-如何避免漏消费？
-
-`kafka`消费端将消费过程和提交`offset`过程做原子绑定（事务），此时将`kafka`的offset保存到支持事务的自定义介质中（如mysql）进行处理。这样就避免业务未处理完毕而进行了commit
-
-
-#### 数据积压
-
-1. 消费者消费能力不足
-
-    如果是消费能力不足, 可通过增加topic的分区数, 并同时提高消费者数量, 消费者数=分区数, 从而增加消费能力
-
-1. 下游数据处理不足（拉取速度/处理时间 < 生产速度）
-
-    如果是下游数据处理不足, 则可提高每批次的拉取数量。并配合每次拉取最大字节数。提高数据拉取熟读
-
-如何增加吞吐量？
+常见做法：处理路径上**异步提交**降低延迟，**关闭/再均衡前**再 **同步提交** 一次，减少丢失已处理进度。
 
 ```go
-//partition设置
-configMap.SetKey("batch.size", 1000000) //数据达到多大容量时发送，可提高至32kb
-configMap.SetKey("linger.ms", 5) //每批次等待时间，超过5ms也发送一次
-
-//consumer设置，先提高poll条数
-configMap.SetKey("fetch.max.bytes", 52428800) //提高每批次抓取最大上限
+configMap.SetKey("enable.auto.commit", "false")
 ```
+
+**指定 Offset 消费**：各客户端 API 提供 `seek` / `assign` + 初始 offset 等能力，用于回放或跳过；具体见对应 SDK。
+
+---
+
+## 重复消费、漏消费与积压
+
+### 重复消费
+
+自动提交间隔内（如默认 5s）若**已处理数据但尚未 commit** 就崩溃，重启后会从**上次已提交 offset** 再拉，导致**重复**。业务侧应**幂等**（唯一键去重、状态机、数据库约束等）。
+
+### 漏消费
+
+若**先异步提交了 offset**，但消息还在内存中**未处理完**进程就被 kill，可能**已提交但未处理**，造成**漏消费**。
+
+缓解思路：将「**处理结果**」与「**offset 记录**」放在**同一事务边界**（例如消费后写库与写 offset 同事务），或使用事务型 Producer/Exactly-once 能力（见下文），按业务复杂度选型。
+
+### 积压与吞吐
+
+1. **消费跟不上**：增加 **分区数** 并增加**同组消费者**（消费者数 ≤ 分区数才有意义）。
+2. **单批处理慢**：适当增大 **`fetch.max.bytes`、每 poll 条数** 等（注意内存与处理延迟）；同时优化下游逻辑。
+
+示例（需按集群与消息体大小压测调整）：
+
+```go
+configMap.SetKey("batch.size", "16384")   // 字节，按实际调优，非越大越好
+configMap.SetKey("linger.ms", "5")
+configMap.SetKey("fetch.max.bytes", "52428800")
+```
+
+---
 
 ## 消息送达语义
 
-* At most once：消息发送或消费至多一次
-* At least once：消息发送或消费至少一次
-* Exactly once：消息恰好只发送一次或消费一次
+| 语义 | 含义 |
+|------|------|
+| **At most once** | 至多一次，可能丢、不重复。 |
+| **At least once** | 至少一次，**可能重复**，一般不丢（视配置与故障模式）。 |
+| **Exactly once** | 端到端「恰好一次」需在 **幂等 Producer + 事务** 等与下游配合；Kafka 提供相关构建块，**不是**所有场景开箱即得。 |
 
-Kafka默认的`Producer`消息送达语义是 `At least once` ，也就是至少投递一次，保证消息不丢失。
+默认 Producer 在未开幂等时，常见为 **at least once** 倾向；云厂商文档也普遍强调消费侧按 **at least once** 做幂等。
 
-### 消息重复和消息幂等
+### 消费失败怎么办
 
-大多数云消息队列 Kafka 版消费的语义是at least once, 但是这样的消费语义就无法保证消息不重复。
-在出现网络问题、客户端重启时，均有可能造成少量重复消息，此时应用消费端如果对消息重复比较敏感（例如订单交易类），则应该做消息幂等。
+1. **重试**：注意阻塞与顺序，避免无限重试导致积压。
+2. **死信 / 失败队列**：失败记录发到专用 Topic 或存储，配合告警与人工/定时修复。
 
-常用做法是：
+---
 
-1. 发送消息时，传入key作为唯一流水号ID。
-1. 消费消息时，判断key是否已经消费过，如果已经被消费，则忽略，如果没消费过，则消费一次。
-1. 如果应用本身对少量消息重复不敏感，则不需要做此类幂等检查。
+## 应用场景（配图见原文路径）
 
-### 消息失败
+### 1. 异步处理（注册发邮件/短信）
 
-当消费者拿到某条消息后执行逻辑失败，例如应用程序出现故障，导致消息处理失败，就需要人工干预，一般的有两种处理方式：
+串行、并行与引入消息队列的对比见下图（响应时间主要变为写库 + 投递 Kafka）。
 
-1. 失败后再次尝试执行消费逻辑，这种方式可能造成消息阻塞，无法向前推进业务，造成消息堆积
-1. 消息队列处理失败后推送到相应的服务，或者消息（例如创建一个Topic专门存储失败消息），然后定时检查失败消息，或发送到系统报警进行人工处理
+![用户注册串行化](https://iscod.github.io/images/kafka1.png)
 
-## 应用场景
+![用户注册并行处理](https://iscod.github.io/images/kafka2.png)
 
-#### 1. 消息传递&异步处理
+![用户注册消息队列](https://iscod.github.io/images/kafka3.png)
 
-场景说明：用户注册后，需要发送注册邮件和注册短信。传统做法有两种：1.串行化，2.并行处理
+### 2. 应用解耦（订单与库存等）
 
-1. 串行化
-
-    ![用户注册串行化](https://iscod.github.io/images/kafka1.png)
-
-1. 并行处理
-
-    ![用户注册并行处理](https://iscod.github.io/images/kafka2.png)
-
-    引入消息队列，对非必须逻辑进行异步处理。改造后的架构如下：
-
-1. 消息队列
-
-    ![用户注册消息队列](https://iscod.github.io/images/kafka3.png)
-
-    可以看到，引入消息队列将非必须的业务逻辑，进行异步处理后。用户的响应时间仅仅相当于是注册信息写入数据库的时间。系统的吞吐量比串行提高了3倍，比并行提高了2倍
-
-#### 2. 应用解耦
-
-场景说明: 用户下单后，订单系统需要通知库存系统、积分系统、物流系统等。传统做法是，订单系统调取库存等系统的API。
+订单系统落库后发事件到 Kafka，库存、积分、物流等各自订阅；下游短时不可用**不阻塞**订单主路径（仍需设计补偿与最终一致）。
 
 ![传统模式用户下单](https://iscod.github.io/images/kafka4.png)
 
-传统模式的缺点是，如果库存系统出现异常无法访问，则订单扣减库存失败，从而导致订单失败，订单系统与库存系统高度耦合
-
-如何解决上面的问题呢？引入消息队列后的系统架构如下：
-
 ![引入消息队列用户下单](https://iscod.github.io/images/kafka5.png)
 
-订单系统: 用户下单后，订单系统完成持久化，将消息写入消息队列，返回用户订单下单成功
-库存系统: 订阅下单消息，采用拉/推送方式，获取订单信息，库存系统根据订单信息，进行库存操作
+### 3. 流量削峰（秒杀等）
 
-假如：在下单时库存系统不能正常使用。也不影响正常下单，因为下单后，订单系统写入消息队列就不再关心其他的后续操作了。实现订单系统与库存系统的应用解耦
-
-#### 3. 流量削峰
-
-流量削峰也是消息队列中的常用场景，一般在秒杀或团抢活动中使用广泛。
-
-应用场景：秒杀活动，一般会因为流量过大，导致流量暴增，应用挂掉。为解决这个问题，一般需要在应用前端加入消息队列。
+请求先入队，后端按能力消费；队列过长时可配合**限流、降级、丢弃或排队页**。
 
 ![流量削峰](https://iscod.github.io/images/kafka6.png)
 
-用户的请求，服务器接收后，首先写入消息队列。假如消息队列长度超过最大数量，则直接抛弃用户请求或跳转至错误页面。
-秒杀业务根据消息队列中的请求信息，做后续处理。
+### 4. 日志同步
 
-#### 4. 日志同步
-
-Kafka设计的初衷是为了应对大量日志传输场景，通过异步处理方式将日志消息同步到消息服务，再通过其它组件对日志进行实时和离线分析。
-日志同步的关键部件是：日志客户端采集，Kafka消息队列，后端日志处理程序，三部分实现
+采集端 → Kafka → 实时/离线分析（如 Flink、ELK 等）。
 
 ![日志同步](https://iscod.github.io/images/kafka7.png)
 
-#### 5. 活动跟踪
+### 5. 活动跟踪
 
-跟踪用户
+将用户行为事件写入 Topic，供推荐、风控、运营分析等订阅消费。
 
-#### 6. 流处理
+### 6. 流处理
 
-实时数据流计算
+与 **Kafka Streams** 或 **Flink** 等结合，做窗口聚合、连接流、实时指标。
 
+---
 
+## 参考
 
-* 参考
-* [kafka-tencent](https://cloud.tencent.com/developer/article/1974648)
-* [kafka-huawei](https://support.huaweicloud.com/productdesc-kafka/kafka-scenarios.html)
-* [Kafka、RabbitMQ和RocketMQ差异](https://support.huaweicloud.com/productdesc-kafka/kafka_pd_0003.html)
+- [Kafka 相关（腾讯云开发者）](https://cloud.tencent.com/developer/article/1974648)
+- [Kafka 场景说明（华为云）](https://support.huaweicloud.com/productdesc-kafka/kafka-scenarios.html)
+- [Kafka、RabbitMQ、RocketMQ 差异（华为云）](https://support.huaweicloud.com/productdesc-kafka/kafka_pd_0003.html)
