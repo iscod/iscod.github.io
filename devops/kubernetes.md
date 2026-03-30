@@ -1,239 +1,237 @@
-# kubernetes
+# Kubernetes
 
-`kubernetes`是一个用于容器编排的引擎，同时提供容器化应用的自动化部署、 扩缩和管理
+`Kubernetes`（K8s）是容器编排系统，提供容器化应用的自动化部署、扩缩容与生命周期管理。
 
-## resources
+## 资源（Resources）
 
-```
+```bash
 # 查看资源名称与对应的 apiVersion
 kubectl api-resources
 ```
 
+## 工作负载（Workloads）
+
 ### Pod
 
 ```bash
-# 运行一个busybox的pod
+# 运行一个 busybox 的 Pod（交互式）
 kubectl run -i -t busybox --image=busybox
 ```
 
-#### Probe健康检查
+#### Probe 健康检查
 
-容器可配置存活（Liveness）、就绪（Readiness）和启动（Startup）三种探针形式
+容器可配置三类探针：
 
-* 存活（Liveness）: 用来确定什么时候重启容器，例如，存活探针可以监测到应用死锁情况，重启这类容器可以提高应用的可用性
-* 就绪（Readiness）: 用来确定容器何时可以接收请求流量，提供服务
-* 启动（Startup）: 可以用来保护慢启动容器，
+- **存活（Liveness）**：决定何时重启容器，例如应用死锁后通过重启恢复可用性。
+- **就绪（Readiness）**：决定容器何时可以接收流量并对外提供服务。
+- **启动（Startup）**：保护慢启动容器，在启动完成前避免被存活探针误杀。
 
-> 存活探针是一种从应用故障中恢复的强劲方式，但应谨慎使用。 你必须仔细配置存活探针，确保它能真正标示出不可恢复的应用故障，例如死锁。
+> 存活探针是从应用故障中恢复的强力手段，但必须谨慎配置，确保它只在不可恢复的故障（例如死锁）时才判定失败。
 
 ```yaml
 apiVersion: v1
 kind: Pod
 metadata:
-  labels:
-    name: probe-test 
   name: probe-test
+  labels:
+    name: probe-test
 spec:
   containers:
-  - name: nginx
-    image: nginx
-    livenessProbe: # 定义一个存活探针，http请求正确返回才可用，一般根据业务逻辑确定
-      httpGet:
-        path: /
-        port: 80
-      failureThreshold: 30 # 探针连续失败了 n 次 认为失败
-      initialDelaySeconds: 15 # 容器启动后要等待多少秒后才启动启动、存活和就绪探针
-      periodSeconds: 3 # 指定 每隔 3 秒执行一次存活探测
-    readinessProbe: # 定义一个就绪探针，http请求正确返回才可用
-      tcpSocket:
-        port: 80
-      initialDelaySeconds: 5
-      periodSeconds: 10
-    startupProbe: # 启动探针
-      httpGet:
-        path: /
-        port: 80
-      failureThreshold: 30 # 探针连续失败了 n 次 认为失败
-      periodSeconds: 10
-# 有启动探测，应用将会有最多 5 分钟（30 * 10 = 300s）的时间来完成其启动过程。
-# 一旦启动探测成功一次，存活探测任务就会接管对容器的探测，对容器死锁作出快速响应。
-# 如果启动探测一直没有成功，容器会在 300 秒后被杀死，并且根据 restartPolicy 来执行进一步处置。
+    - name: nginx
+      image: nginx
+      livenessProbe: # 存活探针：按业务语义定义“不可恢复故障”
+        httpGet:
+          path: /
+          port: 80
+        failureThreshold: 30 # 连续失败 n 次判定失败
+        initialDelaySeconds: 15 # 容器启动后延迟多少秒再开始探测
+        periodSeconds: 3 # 每隔多少秒探测一次
+      readinessProbe: # 就绪探针：决定是否接收流量
+        tcpSocket:
+          port: 80
+        initialDelaySeconds: 5
+        periodSeconds: 10
+      startupProbe: # 启动探针：保护慢启动
+        httpGet:
+          path: /
+          port: 80
+        failureThreshold: 30
+        periodSeconds: 10
+# 有启动探测时：最多 5 分钟（30 * 10 = 300s）完成启动；成功一次后由存活探针接管；
+# 若启动探测一直失败，容器将在 300 秒后被杀死，并按 restartPolicy 进一步处置。
 ```
 
-### deployment
+### Deployment
 
 ```bash
-
-# 根据一个yaml文件创建一个 deployment 资源
-kubectl create deployment user-uservice-deployment -o user-uservice-deployment.yaml
-
-# apply根据一个yaml文件更新一个 deployment 资源
+# 根据现有 YAML 创建/更新 Deployment
 kubectl apply -f user-service-deployment.yaml
 
-# deployment 更新镜像，常与ci/cd结合更新程序
+# 生成 Deployment YAML（不创建，仅输出；用于模板生成）
+kubectl create deployment user-uservice-deployment --image=nginx --dry-run=client -o yaml > user-uservice-deployment.yaml
+
+# Deployment 更新镜像（常与 CI/CD 联动）
 kubectl set image deployment/deployment-name nginx=nginx:1.24
 
-# 查看 deployment 发布历史版本
+# 查看 rollout 历史
 kubectl rollout history deployment user-service-deployment
-# 查看 deployment 发布历史版本详情
 kubectl rollout history deployment user-service-deployment --revision=4
 
-### deployment 回滚, 注意多次回滚只是在最后两个版本相互切换
+# 回滚：多次回滚通常是在最近两个版本间切换
 kubectl rollout undo deployment user-service-deployment
-
-### deployment 回滚到指定版本
 kubectl rollout undo deployment user-service-deployment --to-revision=4
 ```
 
-### statefulSet
+### StatefulSet
 
-有状态应用管理，使用于有状态的应用场景，如：redis-cluster, mongoDB集群、kafka集群、Eureka等
+有状态应用管理，适用于有状态场景，例如：redis-cluster、MongoDB 集群、Kafka 集群、Eureka 等。
 
-创建 `statefulSet` 需存在对应的无头`service`
+创建 `StatefulSet` 通常需要配套的无头 `Service`（Headless Service）。
 
 ```yaml
-## redis for service
+# redis headless service
 apiVersion: v1
 kind: Service
 metadata:
+  name: redis-service
+  namespace: default
+  labels:
     name: redis-service
-    labels:
-        name: redis-service
-    namespace: default
 spec:
-    type: ClusterIP
-    clusterIP: None # 标识为无头服务，无头服务即不会生成clusterIP
-    selector:
-        name: redis-pod
-    ports:
-      - name: "redis-port"
+  type: ClusterIP
+  clusterIP: None # 无头服务：不分配 ClusterIP
+  selector:
+    name: redis-pod
+  ports:
+    - name: redis-port
       port: 6379
       protocol: TCP
       targetPort: 6379
 ```
 
 ```yaml
-## redis for statefulSet
+# redis statefulset
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
+  name: redis-sts
+  namespace: default
+  labels:
     name: redis-sts
-    namespace: default
-    labels:
-        name: redis-sts
 spec:
-    replicas: 2
-    serviceName: redis-service # 这里是上一步创建的service名称
-    selector:
-        matchLabels:
-          name: redis-pod # 必须匹配到template的labels
-    template:
-        metadata:
-            labels:
-              app: redis-app
-              name: redis-pod
-        spec:
-            containers:
-            - image: redis:latest
-              imagePullPolicy: IfNotPresent
-              name: redis-container
-              ports:
-              - containerPort: 6379
-                name: redis-port
-    updateStrategy:
-        type: RollingUpdate
-        rollingUpdate:
-            partition: 0 #指定灰度发布
+  replicas: 2
+  serviceName: redis-service # 上一步创建的 Service 名称
+  selector:
+    matchLabels:
+      name: redis-pod # 必须与 template.labels 匹配
+  template:
+    metadata:
+      labels:
+        app: redis-app
+        name: redis-pod
+    spec:
+      containers:
+        - image: redis:latest
+          imagePullPolicy: IfNotPresent
+          name: redis-container
+          ports:
+            - containerPort: 6379
+              name: redis-port
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      partition: 0 # 指定灰度发布分区
 ```
 
 ### DaemonSet
 
-在匹配的节点或者所有节点创建一个副本，适用于如：节点日志收集、CNI、calico、ingress、node exporter 、flannel
+在匹配的节点（或所有节点）上创建一个副本，常用于：节点日志采集、CNI（如 Calico/Flannel）、Ingress Controller、Node Exporter 等。
 
-```
-# 给节点添加 label: ingress-nginx=true
+```bash
+# 给节点添加 label：ingress-nginx=true
 kubectl label node k8s-node000012 ingress-nginx=true
 ```
 
 ```yaml
-## DaemonSet nginx
+# DaemonSet nginx
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-    name: ingress-nginx
-    labels:
-        name: ingress-nginx-ds
+  name: ingress-nginx
+  labels:
+    name: ingress-nginx-ds
 spec:
-    selector:
-        matchLabels:
-            name: ingress-node
-    template:
-        metadata:
-            labels:
-                name: ingress-node
-        spec:
-            nodeSelector:
-                ingress-nginx: "true" # 根据label，选择node, 不设置则表示选择所有节点
-            containers:
-                - image: nginx:latest
-                  imagePullPolicy: IfNotPresent
-                  name: ingress-nginx-container
+  selector:
+    matchLabels:
+      name: ingress-node
+  template:
+    metadata:
+      labels:
+        name: ingress-node
+    spec:
+      nodeSelector:
+        ingress-nginx: "true" # 不设置则表示选择所有节点
+      containers:
+        - image: nginx:latest
+          imagePullPolicy: IfNotPresent
+          name: ingress-nginx-container
 ```
 
-### service
+## Service
 
-service类型：`ExternalName`, `LoadBalancer`, `NodePort`, `ClusterIP`, `ClusterIP-none`
+Service 类型：`ExternalName`、`LoadBalancer`、`NodePort`、`ClusterIP`、`ClusterIP(None)`。
 
-### label & selector
+## Label & Selector
 
-#### label
+### Label
 
-`label`可以给任意资源(service,pod,node等)添加一个标签分组
+`label` 可以给任意资源（Service/Pod/Node 等）添加标签分组。
 
 ```bash
-kubectl label pod busybox version=v1 # 添加一个label
-kubectl label pod busybox version=v2 --overwrite # 修改一个label
-kubectl get pod -l version=v2 # 筛选version=v2的pod
-kubectl get pod -l 'version in (v2, v1)' # 通过in筛选version=v1和version=v2的资源
-kubectl label pod busybox version- # 删除一个label
+kubectl label pod busybox version=v1 # 添加 label
+kubectl label pod busybox version=v2 --overwrite # 修改 label
+kubectl get pod -l version=v2 # 筛选 version=v2 的 Pod
+kubectl get pod -l 'version in (v2, v1)' # 通过 in 筛选
+kubectl label pod busybox version- # 删除 label
 ```
 
-#### selector
+### Selector
 
-`selector`主要用于筛选符合标签的资源。
-例如: 通过`service.spec.selector`选择对应的`pod`, `Deployment.spec.template.spec.nodeSelector`选择在合适的`node`创建pod
+`selector` 用于筛选符合标签的资源，例如：
+
+- 通过 `service.spec.selector` 选择对应的 `Pod`
+- 通过 `Deployment.spec.template.spec.nodeSelector` 选择在合适的 `Node` 创建 Pod
 
 ```yaml
 apiVersion: v1
 kind: Service
 metadata:
+  name: user-service
+  labels:
     name: user-service
-    labels:
-        name: user-service
 spec:
-    selector:
-        name: user-service # 选择name=user-service的pod
+  selector:
+    name: user-service # 选择 name=user-service 的 Pod
 ```
 
-### ConfigMap && Secret
+## ConfigMap & Secret
 
-#### ConfigMap
+### ConfigMap
 
 ```bash
-kubectl create configmap myconf --from-file conf.yml # 通过配置文件创建 configmap
+kubectl create configmap myconf --from-file conf.yml # 通过配置文件创建 ConfigMap
 ```
 
-如何`deployment`中使用configmap？
+在 `Deployment` 中使用 ConfigMap（以 volume 方式挂载）：
 
 ```yaml
-
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  labels:
-    app: nginx
   name: nginx
   namespace: default
+  labels:
+    app: nginx
 spec:
   selector:
     matchLabels:
@@ -244,236 +242,242 @@ spec:
         app: nginx
     spec:
       containers:
-      - image: nginx
-        imagePullPolicy: Always
-        name: nginx
-        volumeMounts:
-        - mountPath: /var/conf # 容器中的保存路径
-          name: config # 与volumes中的name一直
-          readOnly: true
+        - image: nginx
+          imagePullPolicy: Always
+          name: nginx
+          volumeMounts:
+            - mountPath: /var/conf # 容器内路径
+              name: config # 与 volumes.name 一致
+              readOnly: true
       volumes:
-      - configMap:
-          defaultMode: 420
-          items:
-          - key: conf.yml
-            path: conf.yml
-          name: myconf # configmap中的名字
-        name: config
-
+        - name: config
+          configMap:
+            name: myconf # ConfigMap 名称
+            defaultMode: 420
+            items:
+              - key: conf.yml
+                path: conf.yml
 ```
 
-#### Secret
+### Secret
 
-`secret` 主要用于保存少量敏感信息例如密码、令牌或密钥的对象。 这样的信息可能会被放在 Pod 规约中或者镜像中。
+`Secret` 用于保存少量敏感信息（例如密码、令牌、密钥）。它与 ConfigMap 类似，但专门用于机密数据。
 
-Secret 类似于 ConfigMap 但专门用于保存机密数据。
+```bash
+# 创建 docker-registry 认证 Secret
+kubectl create secret docker-registry myregister \
+  --docker-server=DOCKER_REGISTRY_SERVER \
+  --docker-username=xxxx \
+  --docker-password=xxxx \
+  --docker-email=xxxx
 
-```
-# secret 提供直接创建 docker-registry 认证
-kubectl create secret docker-registry myregister --docker-server=DOCKER_REGISTRY_SERVER --docker-username=xxxx --docker-password=xxxx --docker-email=xxxx
-
-# 创建 nginx 的 tls 证书
+# 创建 TLS 证书 Secret
 kubectl create secret tls NAME --cert=path/to/cert/file --key=path/to/key/file
 ```
 
+## Scale & Autoscale（HPA）
 
-
-### scale && autoscale
-
-``` bash
-# 设置一个deployment的autocale
+```bash
+# 为 Deployment 创建 HPA
 kubectl autoscale deployment user-service-deployment --min=3 --max=6
 
-# 查看当前自动调度列表
+# 查看 HPA
 kubectl get hpa -o wide
 ```
 
-## ingress
+## Ingress
 
-[ingress-nginx](https://kubernetes.github.io/ingress-nginx)和[nginx-ingress](https://github.com/nginxinc/kubernetes-ingress)是两个不同的项目。
+[ingress-nginx](https://kubernetes.github.io/ingress-nginx) 与 [nginx-ingress](https://github.com/nginxinc/kubernetes-ingress) 是两个不同项目：
 
-`ingress-nginx`是k8s官方维护的ingress，
-`nginx-ingress`是nginx官方维护的ingress，两者配置基本相同，在k8s中推荐`ingress-nginx`
+- `ingress-nginx`：K8s 社区/官方维护的 Ingress Controller
+- `nginx-ingress`：Nginx 官方维护的 Ingress Controller
+
+两者配置风格相近，常见选择是 `ingress-nginx`。
 
 ```bash
-helm pull ingress-nginx/ingress-nginx # 下载ingress-nginx
+helm pull ingress-nginx/ingress-nginx # 下载 ingress-nginx chart
 tar xf ingress-nginx-4.7.1.tgz # 解压
-vim ingress-nginx/values.yaml # 修改模版配置文件
+vim ingress-nginx/values.yaml # 修改 values.yaml
 ```
 
-下载`ingress-nginx`后我们需要根据自己的业务需要，修改模版(values.yaml)文件的几个关键位置
+下载 `ingress-nginx` 后通常需要按业务调整 `values.yaml` 的关键项：
 
-1. controller,admissionWebhooks的image地址，选择阿里云等镜像
-2. `hostNetwork`修改为`true`，推荐使用
-3. `dnsPolicy`选择`ClusterFirstWithHostNet`模式
-4. `nodeSelector`添加标识如`ingress-nginx: true`，这样就能指定节点安装
-5. `kind`指定为`DaemonSet`类型
+1. controller、admissionWebhooks 的 image 地址（可切换到阿里云等镜像源）
+2. `hostNetwork: true`（常见配置）
+3. `dnsPolicy: ClusterFirstWithHostNet`
+4. `nodeSelector` 添加标识（例如 `ingress-nginx: "true"`）以固定部署节点
+5. `kind: DaemonSet`
 
 ```bash
-# 启动ingress-nginx
-helm install ingress-nginx -n ingress-nginx . # 在ingress-nginx目录下执行
+# 安装 ingress-nginx（在 chart 目录下执行）
+helm install ingress-nginx -n ingress-nginx .
 
-# 创建一个简单的ingress
-kubectl create ingress ingerss-nginx-svc --class=nginx --rule="ingerss.test.com/*=nginx-svc:80"
+# 创建一个简单 Ingress
+kubectl create ingress ingress-nginx-svc --class=nginx --rule="ingress.test.com/*=nginx-svc:80"
 ```
 
 ```yaml
-# ingress的config yaml文件
+# ingress 配置示例
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-    name: ingerss-nginx-svc
-    namespace: default # service的namespace相同
+  name: ingress-nginx-svc
+  namespace: default # 需与被代理的 Service 处于同一 namespace
 spec:
-    ingressClassName: nginx # 查看已创建的ingressClassName: kubectl get ingressclasses.networking.k8s.io
-    rules:
-        - host: ingerss.test.com
-    http:
+  ingressClassName: nginx # kubectl get ingressclasses.networking.k8s.io
+  rules:
+    - host: ingress.test.com
+      http:
         paths:
-        - backend:
-            service:
-                name: nginx-svc # 代理的服务名
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: nginx-svc
                 port:
-                    number: 80
-                path: /
-                pathType: Prefix
+                  number: 80
 ```
 
 ```bash
-curl ingerss.test.com # 域名解析后或添加hosts后，测试域名
+curl ingress.test.com # 域名解析后或添加 hosts 后测试
 ```
 
-> 访问ingress代理的域名，域名需解析到安装`ingress-nginx-controller` pod 的`node`节点才可访问。详见：[nodeSelector](https://iscod.github.io/#/devops/kubernetes?id=ingress)配置
+> 访问 Ingress 代理域名时，域名需解析到运行 `ingress-nginx-controller` Pod 的 Node 节点才能访问。
 
-#### annotations
+### Annotations
 
-ingress-nginx通过配置`annotations`可以实现常用的服务功能：
-[速率限制](https://kubernetes.github.io/ingress-nginx/user-guide/nginx-configuration/annotations/#rate-limiting)
-[重定向](https://kubernetes.github.io/ingress-nginx/user-guide/nginx-configuration/annotations/#permanent-redirect)
-[白名单](https://kubernetes.github.io/ingress-nginx/user-guide/nginx-configuration/annotations/#whitelist-source-range)
-[代理重定向](https://kubernetes.github.io/ingress-nginx/user-guide/nginx-configuration/annotations/#proxy-redirect)
+`ingress-nginx` 通过 `annotations` 可以实现常用能力：
+
+- [速率限制](https://kubernetes.github.io/ingress-nginx/user-guide/nginx-configuration/annotations/#rate-limiting)
+- [重定向](https://kubernetes.github.io/ingress-nginx/user-guide/nginx-configuration/annotations/#permanent-redirect)
+- [白名单](https://kubernetes.github.io/ingress-nginx/user-guide/nginx-configuration/annotations/#whitelist-source-range)
+- [代理重定向](https://kubernetes.github.io/ingress-nginx/user-guide/nginx-configuration/annotations/#proxy-redirect)
 
 ```yaml
-# 常用 metadata.annotations配置
-nginx.ingress.kubernetes.io/rewrite-target: /$2 # 转发
-nginx.ingress.kubernetes.io/use-regex: "true" # 配置转发时需要的正则表达式，path配置正在规则
-nginx.ingress.kubernetes.io/limit-rps: 1 # 速率限制
-nginx.ingress.kubernetes.io/permanent-redirect: https://www.google.com #重定向
-nginx.ingress.kubernetes.io/temporal-redirect: https://www.google.com # 临时重定向
-nginx.ingress.kubernetes.io/whitelist-source-range: 10.0.0.0/24,172.10.0.1 # 白名单，多个ip `,` 分割
+# 常用 metadata.annotations 配置示例
+nginx.ingress.kubernetes.io/rewrite-target: /$2
+nginx.ingress.kubernetes.io/use-regex: "true"
+nginx.ingress.kubernetes.io/limit-rps: "1"
+nginx.ingress.kubernetes.io/permanent-redirect: https://www.google.com
+nginx.ingress.kubernetes.io/temporal-redirect: https://www.google.com
+nginx.ingress.kubernetes.io/whitelist-source-range: 10.0.0.0/24,172.10.0.1
 ```
 
 ```yaml
-# rewrite配置
+# rewrite 示例
 # foo.com/api -> foo.com
 # foo.com/api/new -> foo.com/new
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-    annotations:
-        nginx.ingress.kubernetes.io/rewrite-target: /$2
-        nginx.ingress.kubernetes.io/use-regex: "true"
-    generation: 3
-    name: rewrite
-    namespace: default
+  name: rewrite
+  namespace: default
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+    nginx.ingress.kubernetes.io/use-regex: "true"
 spec:
-    ingressClassName: nginx
-    rules:
+  ingressClassName: nginx
+  rules:
     - host: foo.com
-        http:
+      http:
         paths:
-        - backend:
-          service:
-            name: nginx-svc
-            port:
-                number: 80
-          path: /api(/|$)(.*)
-          pathType: Prefix
+          - path: /api(/|$)(.*)
+            pathType: Prefix
+            backend:
+              service:
+                name: nginx-svc
+                port:
+                  number: 80
 ```
 
-#### ingress-nginx实现原理？
+### ingress-nginx 实现原理
 
-ingress-nginx会将用户的配置，注入到启动的节点`pod`中的nginx配置文件，从而实现代理，我们看下pod中的配置文件
+`ingress-nginx` 会把用户的 Ingress 配置渲染/注入到 Controller Pod 内的 Nginx 配置文件中，从而实现反向代理。
 
 ```bash
-# 查看ingress-nginx pod中的nginx.conf配置文件， 注意pod名称
-kubectl exec -it ingress-nginx-controller-9qwnw --namespace ingress-nginx cat /etc/nginx/nginx.conf |grep foo.com -A 10
+# 查看 ingress-nginx Pod 中的 nginx.conf（注意替换 Pod 名称）
+kubectl exec -it ingress-nginx-controller-9qwnw -n ingress-nginx -- \
+  sh -c "cat /etc/nginx/nginx.conf | grep foo.com -A 10"
 ```
 
-## metrics-server
+## Metrics Server
 
-## [prometheus](https://github.com/prometheus/prometheus)
+## Prometheus
 
-#### install
+[prometheus](https://github.com/prometheus/prometheus)
+
+### Install（kube-prometheus）
 
 ```bash
-git clone https://github.com/prometheus-operator/kube-prometheus.git #这里选择kube-prometheus版本
+git clone https://github.com/prometheus-operator/kube-prometheus.git
 cd kube-prometheus/manifests
 kubectl apply --server-side -f setup
-kubectl wait --for condition=Established --all CustomResourceDefinition --namespace=monitoring
+kubectl wait --for condition=Established --all CustomResourceDefinition -n monitoring
 kubectl apply -f .
 ```
 
 [kube-prometheus](https://github.com/prometheus-operator/kube-prometheus)
 
-#### 数据可视化
+### 数据可视化
 
-安装完成后，prometheus为我们创建了一系列的服务其中包括：
+安装完成后通常会创建一系列服务，例如：
 
-`alertmanager-main` 是我们的需要的`alert`告警配置
-`grafana` 是`prometheus`数据的可视化 webUI
-`prometheus-k8s`  是相关的`prometheus`自身配置，如 alert、Rules、Configuration
+- `alertmanager-main`：告警配置入口（Alertmanager）
+- `grafana`：指标可视化 Web UI
+- `prometheus-k8s`：Prometheus 实例服务
 
-通过`kubectl get svc --namespace monitoring`可以查看生产的服务
+通过 `kubectl get svc -n monitoring` 查看服务列表，例如：
 
-# prometheus生成的相关服务:
+```text
+alertmanager-main  ClusterIP  10.108.145.122  <none>  9093/TCP,8080/TCP  19h
+grafana            ClusterIP  10.98.163.188   <none>  3000/TCP           19h
+prometheus-k8s     ClusterIP  10.105.23.112   <none>  9090/TCP,8080/TCP  19h
+```
 
-    # prometheus生成的相关服务：
-    alertmanager-main       ClusterIP   10.108.145.122   <none>        9093/TCP,8080/TCP            19h
-    grafana                 ClusterIP   10.98.163.188    <none>        3000/TCP                     19h
-    prometheus-k8s          ClusterIP   10.105.23.112    <none>        9090/TCP,8080/TCP            19h
-
-
-而我们想通过域名访问，需要通过[ingress](https://iscod.github.io/#/devops/kubernetes?id=ingress)进行服务的反向代理
+若希望通过域名访问，可通过 [Ingress](https://iscod.github.io/#/devops/kubernetes?id=ingress) 进行反向代理：
 
 ```bash
-# 创建ingress, namespace必须和服务在同一命名空间, 留意alertmanager-main,prometheus-k8s的端口号
-kubectl create ingress prometheus --class=nginx --rule="grafana.test.com/*=grafana:3000" --rule="alert.test.com/*=alertmanager-main:9093" --rule="prometheus.test.com/*=prometheus-k8s:9090" --namespace=monitoring
+# namespace 必须与服务在同一命名空间；留意端口号
+kubectl create ingress prometheus --class=nginx \
+  --rule="grafana.test.com/*=grafana:3000" \
+  --rule="alert.test.com/*=alertmanager-main:9093" \
+  --rule="prometheus.test.com/*=prometheus-k8s:9090" \
+  -n monitoring
 ```
 
-#### 告警配置
+### 告警配置
 
-prometheus提供多种告警通知包括常用的：
-[email_config](https://prometheus.io/docs/alerting/latest/configuration/#email_config) 、
-[wechat_config](https://prometheus.io/docs/alerting/latest/configuration/#wechat_config)
+Prometheus 常用通知渠道配置：
 
+- [email_config](https://prometheus.io/docs/alerting/latest/configuration/#email_config)
+- [wechat_config](https://prometheus.io/docs/alerting/latest/configuration/#wechat_config)
 
-*邮件配置*
+#### 邮件配置
 
-在`alertmanager-secret.yaml`添加我们的邮件信息
+在 `alertmanager-secret.yaml` 中添加邮件配置示例：
 
 ```yaml
-"global": #global中添加邮件服务器信息
-  "resolve_timeout": "6m"
-  "smtp_from": "xxxx@163.com"
-  "smtp_smarthost": "smtp.163.com:465" # smtp根据邮箱服务商配置
-  "smtp_hello": "prometheus"
-  "smtp_auth_username": "xxxx@163.com"
-  "smtp_auth_password": "xxxx"
-  "smtp_require_tls": false #注意，163不支持tls必须添加为false才行
-"receivers":
-    - "name": "Default"
-      "email_configs": #receiversz中添加接受者email_configs配置
-      - "to": "xxxx@163.com"
-        "send_resolved": true
+global:
+  resolve_timeout: 6m
+  smtp_from: xxxx@163.com
+  smtp_smarthost: smtp.163.com:465
+  smtp_hello: prometheus
+  smtp_auth_username: xxxx@163.com
+  smtp_auth_password: xxxx
+  smtp_require_tls: false # 注意：部分邮箱服务商可能不支持 TLS
+receivers:
+  - name: Default
+    email_configs:
+      - to: xxxx@163.com
+        send_resolved: true
 ```
 
-*微信配置*
+#### 微信配置
 
-#### 架构图
+### 架构图
 
 ![prometheus](https://iscod.github.io/images/prometheus.png)
 
-## istio
+## Istio
 
 ### 服务网格
